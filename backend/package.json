@@ -1,0 +1,17 @@
+{
+  "name": "glo-ticket-verifier-backend",
+  "version": "1.0.0",
+  "description": "GLO E-Lottery ticket verification API (prototype)",
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node db/seed.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}
