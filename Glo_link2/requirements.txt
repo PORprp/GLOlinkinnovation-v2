@@ -1,7 +1,0 @@
-streamlit
-opencv-python
-pytesseract
-pandas
-numpy
-gspread
-google-auth
