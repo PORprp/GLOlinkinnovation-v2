@@ -1,0 +1,68 @@
+{
+  "dataset_name": "manual_lotto_fakeness_dimension_test",
+  "image_count_target": 100,
+  "photos_per_dimension": 10,
+  "input_mode": "manual_user_photos",
+  "dimensions": [
+    {
+      "id": "main_number_spacing",
+      "folder": "01_main_number_spacing",
+      "region": "main_number",
+      "checks": ["digit_gap", "uneven_spacing", "digit_group_composition"]
+    },
+    {
+      "id": "main_number_alignment",
+      "folder": "02_main_number_alignment",
+      "region": "main_number",
+      "checks": ["baseline", "vertical_offset", "rotation", "centering"]
+    },
+    {
+      "id": "main_number_font",
+      "folder": "03_main_number_font",
+      "region": "main_number",
+      "checks": ["font_shape", "serif_mismatch", "digit_style_mismatch"]
+    },
+    {
+      "id": "main_number_scale",
+      "folder": "04_main_number_scale",
+      "region": "main_number",
+      "checks": ["digit_size", "digit_width", "digit_height", "stretch"]
+    },
+    {
+      "id": "logo_position",
+      "folder": "05_logo_position",
+      "region": "logo",
+      "checks": ["x_shift", "y_shift", "edge_distance", "header_spacing"]
+    },
+    {
+      "id": "logo_scale",
+      "folder": "06_logo_scale",
+      "region": "logo",
+      "checks": ["size", "aspect_ratio", "stretch"]
+    },
+    {
+      "id": "date_alignment",
+      "folder": "07_date_alignment",
+      "region": "date",
+      "checks": ["baseline", "line_gap", "thai_english_alignment", "rotation"]
+    },
+    {
+      "id": "qr_position",
+      "folder": "08_qr_position",
+      "region": "qr_code",
+      "checks": ["x_shift", "y_shift", "quiet_zone", "nearby_element_spacing"]
+    },
+    {
+      "id": "barcode_position",
+      "folder": "09_barcode_position",
+      "region": "barcode",
+      "checks": ["x_shift", "y_shift", "barcode_number_alignment", "parallel_alignment"]
+    },
+    {
+      "id": "patch_boundary",
+      "folder": "10_patch_boundary",
+      "region": "edited_patch",
+      "checks": ["edge_halo", "tone_discontinuity", "texture_break", "feathering"]
+    }
+  ]
+}

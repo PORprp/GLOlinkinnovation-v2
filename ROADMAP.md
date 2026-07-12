@@ -2,6 +2,11 @@
 
 You chose **"full working app with backend."** This is the phased plan to get there. Each phase is independently shippable and testable. Phases 1–2 are already built in this repo; 3 onward is the forward plan.
 
+## Product-owner next plan
+1. ✅ **Scan alignment guides** — the scan frame now shows labeled inner zones (เลขสลาก / QR·Data Matrix / บาร์โค้ด) so users line the ticket up correctly. *(done)*
+2. ⬜ **Train the ML authenticity model** — replace the pixel heuristic with a trained model (see Phase 4 below): collect a labeled dataset of genuine vs. fake/photocopy ticket photos, fine-tune a small CNN (MobileNet/EfficientNet) or wire the Claude/GPT-4o vision checklist via `/api/verify-image`. The 21 real tickets are the seed of the "genuine" class.
+3. ⬜ **Run it from any phone** — host the app over HTTPS as a PWA so a phone just opens a URL (camera works on HTTPS), instead of needing a laptop running the local server (see Phase 6).
+
 ## Phase 1 — Pixel-perfect frontend ✅ (done)
 - All 8 screens rebuilt to match the official GLO design (logo, seal, colors, proportions, icon positions).
 - Real barcode scanning via the browser `BarcodeDetector` API.
@@ -16,14 +21,17 @@ You chose **"full working app with backend."** This is the phased plan to get th
 - Server-side rules engine as the source of truth; every scan is audited.
 - Duplicate-claim protection (409).
 
-## Phase 3 — Real accounts & authentication
+## Phase 3 — Real accounts & authentication  🟡 (ownership built)
 **Goal:** each ticket is owned by a real, logged-in user.
-- Phone/OTP or ThaID login; issue a session/JWT.
-- Hash the 6-digit PIN (bcrypt/argon2) — never store plaintext.
-- Bind a bank account to the user record (masked display only).
-- Tie `scan_actions` and `claim_rewards` to `user_id`.
-- **Deliverable:** login screen + protected endpoints.
-- **Est:** 3–5 days.
+- ✅ **Two scan modes** — *ตรวจสอบสลาก* (verify only, no ownership) and *สแกนเก็บสลาก*
+  (collect ownership). Set on the home screen; carried through the flow as `S.mode`.
+- ✅ **Ownership + conflict** — `POST /api/ownership` registers a ticket to a user; a second
+  user scanning the same ticket gets `409 ownership_conflict` (masked owner) and is routed to
+  review. Cashing is also blocked on conflict (`/api/claims`). `tickets.owner_id` is the record.
+- ⬜ **Real login** — phone/OTP or ThaID; issue a session/JWT (currently a fixed demo user id).
+- ⬜ **Hash the 6-digit PIN** (bcrypt/argon2) — never store plaintext.
+- ⬜ Bind a real bank account to the user record.
+- **Est. remaining:** 3–4 days.
 
 ## Phase 4 — Image authenticity check  🟡 (partially built)
 **Goal:** the front/back photos are analysed, not just OCR'd.
