@@ -1,4 +1,4 @@
-const CACHE_NAME = 'glo-ticket-verifier-v8';
+const CACHE_NAME = 'glo-ticket-verifier-v9';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -32,13 +32,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // NETWORK-FIRST for the app shell: always try to fetch the latest
+  // index.html / app.js so bug fixes reach the device immediately.
+  // Fall back to the cached copy only when offline.
   event.respondWith(
-    caches.match(req).then((cached) =>
-      cached || fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
-        return res;
-      }).catch(() => caches.match('/index.html'))
+    fetch(req).then((res) => {
+      const copy = res.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+      return res;
+    }).catch(() =>
+      caches.match(req).then((cached) => cached || caches.match('/index.html'))
     )
   );
 });

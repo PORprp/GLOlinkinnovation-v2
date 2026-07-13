@@ -141,6 +141,26 @@ function signatureTicketFromCode(code) {
   return applyRuntime(row);
 }
 
+// ITF (1D) barcodes start with <yearCE2><series2><set2> + a 10-digit serial that
+// is NOT derivable from the Data Matrix. Several seeded tickets have no ITF code
+// registered (alt_barcode empty), so an unknown-but-well-formed ITF scan is
+// matched by its year/series/set prefix; the printed number (read by OCR at the
+// photo step) then picks the exact ticket, and the code is bound as that
+// ticket's alt_barcode so the next scan is an exact match.
+function itfPrefixCandidates(code) {
+  const c = String(code == null ? '' : code).trim();
+  if (!/^\d{14,18}$/.test(c)) return [];
+  const yy = c.slice(0, 2), series = c.slice(2, 4), set = c.slice(4, 6);
+  const beYY = String((Number(yy) + 43) % 100).padStart(2, '0');   // 26 (2026 CE) -> 69 (2569 BE)
+  const rows = db.prepare('SELECT * FROM tickets WHERE barcode LIKE ?').all(`${beYY}-${series}-${set}-%`);
+  return rows.map(applyRuntime);
+}
+function bindAltBarcode(row, code) {
+  const c = String(code == null ? '' : code).trim();
+  if (!row || !/^\d{14,18}$/.test(c) || row.alt_barcode === c) return;
+  try { db.prepare('UPDATE tickets SET alt_barcode = ? WHERE barcode = ?').run(c, row.barcode); } catch {}
+}
+
 /* ---------- lookup ---------- */
 app.get('/api/tickets/:barcode', (req, res) => {
   const row = getTicket(req.params.barcode);
@@ -158,6 +178,36 @@ app.post('/api/scan-validate', (req, res) => {
   const reasons = [];
   let ok = true;
 
+  // Unregistered ITF code: match by year/series/set prefix. The photo/OCR step
+  // confirms which candidate it is, so the scan may proceed.
+  if (!row) {
+    const candidates = itfPrefixCandidates(barcode);
+    if (candidates.length) {
+      const collectible = candidates.filter((r) => !r.owner_id && !r.is_claimed);
+      if (mode !== 'collect' || collectible.length) {
+        return res.json({
+          ok: true, mode, reasons: [],
+          scanned_number: null, parsed_payload,
+          lookup_method: 'itf_prefix',
+          number_match: null,
+          already_collected: false,
+          owner_mask: null,
+          candidates: candidates.map(shape),
+          ticket: shape(candidates[0])
+        });
+      }
+      const mine = candidates.some((r) => String(r.owner_id) === String(user_id));
+      return res.status(409).json({
+        ok: false, mode,
+        reasons: [mine ? 'already_collected_by_you' : 'already_collected_by_other'],
+        scanned_number: null, parsed_payload, lookup_method: 'itf_prefix',
+        number_match: null, already_collected: true,
+        owner_mask: maskUser(candidates[0].owner_id || ''),
+        candidates: candidates.map(shape), ticket: shape(candidates[0])
+      });
+    }
+  }
+
   if (!row) {
     ok = false;
     reasons.push('barcode_not_found');
@@ -166,7 +216,10 @@ app.post('/api/scan-validate', (req, res) => {
       ok = false;
       reasons.push('barcode_number_mismatch');
     }
-    if (mode === 'collect' && !scanned_number) {
+    // If the code matched a registered barcode/alt_barcode exactly, the ticket
+    // number is already confirmed by the DB — no need to extract it from the
+    // code itself (the 1D ITF barcode doesn't embed the 6-digit number).
+    if (mode === 'collect' && !scanned_number && !exact) {
       ok = false;
       reasons.push('scan_number_unavailable');
     }
@@ -174,12 +227,9 @@ app.post('/api/scan-validate', (req, res) => {
       ok = false;
       reasons.push(String(row.owner_id) === String(user_id) ? 'already_collected_by_you' : 'already_collected_by_other');
     }
-    if (mode === 'collect' && user_id) {
-      if (hasDuplicateRuntimeNumber(row, user_id)) {
-        ok = false;
-        reasons.push('duplicate_number_collected');
-      }
-    }
+    // NOTE: no duplicate-number rule — GLO sells sets of tickets with identical
+    // numbers (different barcodes); owning several is legitimate. Fraud
+    // protection is the per-barcode ownership check above.
     if (row.is_claimed) {
       ok = false;
       reasons.push('already_claimed');
@@ -317,17 +367,21 @@ app.post('/api/ownership/validate', (req, res) => {
      • already yours        → { status:'already_yours' }
      • owned by someone else→ 409 { status:'ownership_conflict', owner_mask }  (goes to review) */
 app.post('/api/ownership', (req, res) => {
-  const { barcode, user_id = '0812345678', lat = null, lng = null } = req.body || {};
-  const row = getTicket(barcode);
+  const { barcode, user_id = '0812345678', lat = null, lng = null,
+          scanned_code = null, number = null } = req.body || {};
+  let row = getTicket(barcode);
+  // scanned an unregistered ITF code: OCR-confirmed number picks the ticket
+  if (!row && number) {
+    row = itfPrefixCandidates(scanned_code || barcode).find((r) => r.number === String(number)) || null;
+  }
   if (!row) return res.status(404).json({ error: 'not_found' });
+  // learn the physical ITF code so future scans match exactly
+  if (scanned_code) bindAltBarcode(row, scanned_code);
 
   let status;
   if (!row.owner_id) {
-    if (hasDuplicateRuntimeNumber(row, user_id)) {
-      audit(`INSERT INTO scan_actions (barcode,user_id,action_type,result_status,lat,lng)
-        VALUES (?,?,?,?,?,?)`, [row.barcode, user_id, 'collect', 'review', lat, lng]);
-      return res.status(409).json({ status: 'duplicate_number_collected', ticket: shape(row) });
-    }
+    // identical numbers across different barcodes are legitimate (ticket sets) —
+    // only the same physical barcode is blocked from double-collection
     setRuntimeOwner(row.barcode, user_id);
     status = 'registered';
   } else if (String(row.owner_id) === String(user_id)) {

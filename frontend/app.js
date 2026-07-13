@@ -193,6 +193,13 @@ function parsedDataMatrixCodeJS(code){
   const payload=c.match(/(?:^|\D)(\d{2})-(\d{2})-(\d{2})-(\d{6})-(\d{4})(?:\D|$)/);
   return payload?{year:payload[1],series:payload[2],set:payload[3],number:payload[4],suffix:payload[5]}:null;
 }
+function exactSeedLookup(code){
+  if(code==null) return null;
+  const c=String(code).trim();
+  if(SEED[c]) return SEED[c];
+  for(const k in SEED){ if(SEED[k].alt && SEED[k].alt===c) return SEED[k]; }
+  return null;
+}
 function signatureSeedLookup(code){
   const parsed=parsedDataMatrixCodeJS(code);
   if(!parsed) return null;
@@ -214,16 +221,18 @@ async function validateScannedCode(code){
       return await r.json();
     }catch(e){}
   }
-  const signatureTicket=signatureSeedLookup(code);
-  const ticket=signatureTicket || seedLookup(code);
+  const exactTicket=exactSeedLookup(code);
+  const signatureTicket=exactTicket?null:signatureSeedLookup(code);
+  const ticket=exactTicket || signatureTicket || seedLookup(code);
   const scanned_number=scannedNumberFromCodeJS(code);
   const reasons=[];
   if(!ticket) reasons.push('barcode_not_found');
   if(ticket && scanned_number && scanned_number!==ticket.number) reasons.push('barcode_number_mismatch');
-  if(ticket && S.mode==='collect' && !scanned_number) reasons.push('scan_number_unavailable');
+  // exact barcode/alt_barcode match already confirms the number (ITF codes don't embed it)
+  if(ticket && S.mode==='collect' && !scanned_number && !exactTicket) reasons.push('scan_number_unavailable');
   if(ticket && S.mode==='collect' && ticket.owner_id) reasons.push(String(ticket.owner_id)===S.userId?'already_collected_by_you':'already_collected_by_other');
-  if(ticket && S.mode==='collect' && S.saved.some(t=>t.barcode===ticket.barcode || t.number===ticket.number)) reasons.push('duplicate_number_collected');
-  return {ok:reasons.length===0,reasons,scanned_number,parsed_payload:parsedDataMatrixCodeJS(code),lookup_method:signatureTicket?'signature':ticket?'fallback':'none',number_match:!!ticket&&(!scanned_number||scanned_number===ticket.number),already_collected:!!(ticket&&ticket.owner_id),owner_mask:ticket&&ticket.owner_id?maskUserJS(ticket.owner_id):null,ticket};
+  if(ticket && S.mode==='collect' && S.saved.some(t=>t.barcode===ticket.barcode)) reasons.push('already_collected_by_you');
+  return {ok:reasons.length===0,reasons,scanned_number,parsed_payload:parsedDataMatrixCodeJS(code),lookup_method:exactTicket?'exact':signatureTicket?'signature':ticket?'fallback':'none',number_match:!!ticket&&(!scanned_number||scanned_number===ticket.number),already_collected:!!(ticket&&ticket.owner_id),owner_mask:ticket&&ticket.owner_id?maskUserJS(ticket.owner_id):null,ticket};
 }
 function scanReasonText(validation){
   const reasons=(validation&&validation.reasons)||[];
@@ -234,7 +243,9 @@ function scanReasonText(validation){
   if(reasons.includes('already_claimed')) return 'สลากนี้ขึ้นเงินแล้ว';
   if(reasons.includes('claim_window_closed')) return 'สลากนี้หมดระยะขึ้นเงินแล้ว';
   if(reasons.includes('barcode_not_found')) return 'ไม่พบรหัสสลากในฐานข้อมูล';
-  return 'รหัสสลากไม่ผ่านการตรวจสอบ';
+  if(reasons.includes('scan_number_unavailable')) return 'อ่านเลขสลากจากโค้ดไม่ได้ — ลองสแกน Data Matrix (โค้ดสี่เหลี่ยม) แทน';
+  // show the raw reason codes so an unmapped failure is debuggable
+  return 'รหัสสลากไม่ผ่านการตรวจสอบ'+(reasons.length?' ['+reasons.join(', ')+']':' [ไม่ได้รับเหตุผลจากเซิร์ฟเวอร์]');
 }
 async function onDetect(raw){
   if(S.barcode) return;                                  // ignore repeats
@@ -252,11 +263,14 @@ async function onDetect(raw){
   const validation=await validateScannedCode(code);
   S.scanValidation=validation;
   S.ticket=validation.ticket||null;
+  S.scanCandidates=(validation.candidates&&validation.candidates.length)?validation.candidates:null;
   if(validation.ok){
     S.scanCanContinue=true;
     const dbNum=validation.ticket&&validation.ticket.number?validation.ticket.number:'';
     const scannedNum=validation.scanned_number?` · เลขในโค้ด ${validation.scanned_number}`:'';
-    st.textContent='ผ่าน: พบรหัสในฐานข้อมูล'+(dbNum?` · เลขสลาก ${dbNum}`:'')+scannedNum;
+    st.textContent=(validation.lookup_method==='itf_prefix'&&S.scanCandidates&&S.scanCandidates.length>1)
+      ? 'ผ่าน: พบกลุ่มสลากในฐานข้อมูล · ระบบจะยืนยันเลขจากภาพถ่าย'
+      : 'ผ่าน: พบรหัสในฐานข้อมูล'+(dbNum?` · เลขสลาก ${dbNum}`:'')+scannedNum;
     btn.textContent=S.mode==='verify'?'ถ่ายภาพตรวจสลากจริง':'ถ่ายภาพเพื่อเก็บสิทธิ์';
     btn.disabled=false;
   }else{
@@ -377,6 +391,12 @@ async function runVerify(){
   // OCR is required: the printed number in the photo must match the scanned ticket.
   step(3,'act');
   S.ocr = await runOCR(S.frontImg, ticket, S.frontPlaceholder);
+  // ITF-prefix scan matched several tickets: the OCR-confirmed printed number
+  // now identifies the exact one.
+  if(S.scanCandidates && S.scanCandidates.length && S.ocr){
+    const m=S.scanCandidates.find(c=>String(c.number)===S.ocr);
+    if(m){ ticket=m; S.ticket=m; }
+  }
   ocrReadable = S.frontPlaceholder ? true : (S.ocr!=null);
   ocrMatch = ticket.status !== 'invalid' && ticket.number!=='??????' && S.ocr === ticket.number;
   await sleep(300); step(3,'done');
@@ -529,7 +549,10 @@ function preprocessRegion(dataURL, crop, mode){
       const range=Math.max(1,max-min);
       for(let i=0;i<p.length;i+=4){
         const stretched=((p[i]-min)/range)*255;
-        const v=mode==='line'
+        // 'raw' mode: contrast-stretched grayscale only, NO binarization —
+        // hard thresholds can erase digits under uneven light or glare.
+        const v=mode==='raw' ? stretched
+          : mode==='line'
           ? (stretched<120?0:stretched>188?255:stretched)
           : (stretched<100?0:stretched>176?255:stretched);
         p[i]=p[i+1]=p[i+2]=v;
@@ -556,32 +579,66 @@ function extractNumber(text){
 }
 
 function extractNumberCandidates(text){
-  const groups=(text.match(/\d+/g)||[]);
   const out=[];
-  for(const g of groups){
-    if(g.length===6) out.push(g);
-    else if(g.length>6 && g.length<=18){
-      for(let i=0;i<=g.length-6;i++) out.push(g.slice(i,i+6));
+  const lines=String(text||'').split(/\n+/);
+  for(const line of lines){
+    const groups=(line.match(/\d+/g)||[]);
+    for(const g of groups){
+      if(g.length===6) out.push(g);
+      else if(g.length>6 && g.length<=18){
+        for(let i=0;i<=g.length-6;i++) out.push(g.slice(i,i+6));
+      }
+    }
+    // The printed number has wide gaps between digits ("0 3 9 1 8 4"),
+    // so OCR returns single-digit groups. Join all digits on the line
+    // and take every 6-digit window as a candidate too.
+    const joined=line.replace(/\D/g,'');
+    if(joined.length>=6 && joined.length<=18){
+      for(let i=0;i<=joined.length-6;i++) out.push(joined.slice(i,i+6));
     }
   }
   return [...new Set(out)];
 }
 
+// one-digit OCR tolerance: 6-char strings differing in at most 1 position
+function hamming6(a,b){let d=0;for(let i=0;i<6;i++)if(a[i]!==b[i])d++;return d;}
+// junk detector for the no-match fallback: barcode stripes misread as digits
+// ("222256") or slices of codes printed on the ticket ("692613", "262613"...)
+function isJunkOcrCandidate(value){
+  if(/(\d)\1{3}/.test(value)) return true;                       // 4+ repeats of one digit
+  if(new Set(value.split('')).size<=2) return true;              // almost no digit variety
+  const sources=[S.barcode];
+  const pool=(S.scanCandidates&&S.scanCandidates.length)?S.scanCandidates:(S.ticket?[S.ticket]:[]);
+  for(const t of pool){ sources.push(t.barcode, t.alt_barcode||t.alt); }
+  return sources.some(s=>{
+    const d=String(s||'').replace(/\D/g,'');
+    return d.length>=8 && d.includes(value);
+  });
+}
 async function runOCR(img,ticket,isPlaceholder){
   // Demo placeholder (no real camera): trust the ticket number so the flow is testable.
   if(isPlaceholder) return ticket && ticket.number!=='??????' ? ticket.number : null;
   // Real photo: read it for real. If we can't read a 6-digit number → return null
   // (STRICT: an unreadable photo must NOT silently pass as a match).
   if(img && typeof Tesseract!=='undefined'){
-    const expected=ticket&&ticket.number&&ticket.number!=='??????'?String(ticket.number):null;
+    // Ambiguous ITF-prefix scans carry several possible tickets; the printed
+    // number decides which one, so match OCR output against ALL their numbers.
+    const expectedSet=(S.scanCandidates&&S.scanCandidates.length)
+      ? [...new Set(S.scanCandidates.map(c=>String(c.number)))]
+      : (ticket&&ticket.number&&ticket.number!=='??????'?[String(ticket.number)]:[]);
+    const expected=expectedSet.length===1?expectedSet[0]:null;
     const variants=[
       {name:'main_number_top_right',crop:{x:.42,y:.08,w:.55,h:.24},psm:'7',mode:'line'},
+      {name:'main_number_top_right_raw',crop:{x:.42,y:.08,w:.55,h:.24},psm:'7',mode:'raw'},
       {name:'main_number_upper_band',crop:{x:.30,y:.04,w:.68,h:.34},psm:'6',mode:'line'},
+      {name:'upper_band_raw',crop:{x:.30,y:.04,w:.68,h:.34},psm:'6',mode:'raw'},
       {name:'ticket_middle',crop:{x:.08,y:.10,w:.86,h:.52},psm:'6',mode:'block'},
-      {name:'full_frame',crop:null,psm:'6',mode:'block'}
+      {name:'full_frame',crop:null,psm:'6',mode:'block'},
+      {name:'full_frame_raw',crop:null,psm:'6',mode:'raw'}
     ];
     const allCandidates=[];
     let bestConfidence=0;
+    S.ocrDebug=[];   // per-variant diagnostics, inspectable in the console
     try{
       const w=await Tesseract.createWorker('eng');
       for(const v of variants){
@@ -596,29 +653,40 @@ async function runOCR(img,ticket,isPlaceholder){
         if(confidence>bestConfidence) bestConfidence=confidence;
         const text=data.text||'';
         const candidates=extractNumberCandidates(text);
+        S.ocrDebug.push({variant:v.name,confidence,text:text.replace(/\n+/g,' | ').slice(0,140),candidates});
         for(const value of candidates) allCandidates.push({value,confidence,source:v.name});
-        if(expected && candidates.includes(expected)){
+        const hit=expectedSet.find(e=>candidates.includes(e));
+        if(hit){
           await w.terminate();
           S.ocrConfidence=confidence;
           S.ocrSource=v.name;
           S.ocrCandidates=candidates;
-          return expected;
+          return hit;
         }
-        if(candidates.length && confidence>=35){
-          await w.terminate();
-          S.ocrConfidence=confidence;
-          S.ocrSource=v.name;
-          S.ocrCandidates=candidates;
-          return candidates[0];
-        }
+        // Do NOT return early on a non-expected candidate — the barcode digits
+        // in the photo also produce 6-digit slices. Keep trying every crop
+        // region; only after all variants pick the best candidate.
       }
       await w.terminate();
       S.ocrConfidence=bestConfidence;
-      S.ocrCandidates=allCandidates.map(c=>c.value);
-      if(allCandidates.length){
-        allCandidates.sort((a,b)=>b.confidence-a.confidence);
-        S.ocrSource=allCandidates[0].source;
-        return allCandidates[0].value;
+      S.ocrCandidates=[...new Set(allCandidates.map(c=>c.value))];
+      // exact match against any expected number, seen in any region
+      for(const e of expectedSet){
+        if(allCandidates.some(c=>c.value===e)){ S.ocrSource='combined'; return e; }
+      }
+      // fuzzy match: tolerate ONE misread digit (glossy print, moiré)
+      for(const e of expectedSet){
+        const near=allCandidates.find(c=>!isJunkOcrCandidate(c.value)&&hamming6(c.value,e)<=1);
+        if(near){ S.ocrSource='fuzzy:'+near.source; return e; }
+      }
+      // no expected number found: report a clean candidate only if one exists —
+      // junk (barcode-stripe misreads, code slices) must NOT masquerade as a
+      // read number. If everything is junk, the photo is effectively unreadable.
+      const clean=allCandidates.filter(c=>!isJunkOcrCandidate(c.value));
+      if(clean.length){
+        clean.sort((a,b)=>b.confidence-a.confidence);
+        S.ocrSource=clean[0].source;
+        return clean[0].value;
       }
     }catch(e){ console.warn('OCR error',e); }
   }
@@ -662,7 +730,7 @@ function renderVerify(t,ocrMatch,dateOK,ocrReadable){
     : '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
   set('ck-barcode', barcodeOK?'พบข้อมูล':'ไม่พบข้อมูล', barcodeOK?'ok':'bad');
   if(!ocrReadable) set('ck-ocr','อ่านเลขไม่ได้ — ถ่ายใหม่','warn');
-  else set('ck-ocr', ocrMatch?('ยืนยันจากบาร์โค้ด ('+(S.ocr||num)+')'):('ไม่พบเลขในฐานข้อมูล'), ocrMatch?'ok':'bad');
+  else set('ck-ocr', ocrMatch?('ยืนยันจากบาร์โค้ด ('+(S.ocr||num)+')'):('เลขที่อ่านได้ ('+(S.ocr||'—')+') ไม่ตรงกับเลขสลาก '+num), ocrMatch?'ok':'bad');
   // (B) AI image-authenticity row
   if(S.aiScore!=null){
     const good=!imgBad;
@@ -729,7 +797,7 @@ async function onCollect(){
   }
   let resp=null;
   if(API_BASE || location.protocol.startsWith('http')){
-    try{ const r=await fetch(`${API_BASE}/api/ownership`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geoBody({barcode:t.barcode,user_id:S.userId}))});
+    try{ const r=await fetch(`${API_BASE}/api/ownership`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geoBody({barcode:t.barcode,user_id:S.userId,scanned_code:S.barcode,number:t.number}))});
       resp=await r.json(); }catch(e){}
   }
   if(!resp){ // offline fallback
@@ -761,7 +829,7 @@ async function showPrize(register){
   const t=S.ticket; if(!t)return;
   if(register){
     await apiPost('/api/scans',geoBody({barcode:t.barcode,user_id:S.userId,action_type:'collect',ocr_result:S.ocr,result_status:'ok'}));
-    if(!S.saved.some(x=>x.barcode===t.barcode || x.number===t.number)){
+    if(!S.saved.some(x=>x.barcode===t.barcode)){
       S.saved.unshift({...t,owner_id:t.owner_id||S.userId,savedAt:new Date().toLocaleDateString('th-TH'),geo:S.geo});
     }
   }
@@ -835,7 +903,7 @@ function renderSaved(){
   </div>`).join('');
 }
 
-function resetFlow(){S.barcode=null;S.frontImg=null;S.backImg=null;S.ocr=null;
+function resetFlow(){S.barcode=null;S.frontImg=null;S.backImg=null;S.ocr=null;S.scanCandidates=null;
   S.frontPlaceholder=false;S.backPlaceholder=false;S.aiScore=null;S.aiReason=null;S.aiScreenshot=false;S.ocrConfidence=null;
   ['front','back'].forEach(s=>{document.getElementById(s+'-thumb').style.display='none';document.getElementById(s+'-next').classList.remove('on');});}
 
