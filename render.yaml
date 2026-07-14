@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: glo-ticket-verifier
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    # disk is ephemeral on the free plan → reseed the demo DB on every boot
+    startCommand: npm run seed && npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
